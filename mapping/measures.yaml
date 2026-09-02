@@ -1,0 +1,302 @@
+# Derived from analyzing "Dispute Outcomes Summary.pbix" (Downloads), unpacked
+# with pbixray (binary .pbix -- no .pbip source folders this time).
+#
+# UPDATE 2026-08-28: the report IS published to the Power BI Service after all
+# (workspace c5ad4ae8-eb20-4388-8cf2-923a7b82dc04, confirmed live via
+# /groups/{workspace}/reports -- report_id c7c3166e-dd37-4404-9259-d876530a88ce
+# links to dataset_id a6dcb475-1034-49b8-a535-b90ae4c63f22, now filled in below).
+# End-to-end reconciliation has been run for real: Snowflake and Power BI agree
+# exactly on total_dispute_count (4635) and total_disputed_amount ($9,074,794.20).
+#
+# Semantic model source: Snowflake, host HYJORBY-XPA44053.snowflakecomputing.com,
+# warehouse/database QA_PLATFORM, schema PLATFORM_EXPORT_ADAPTER. The dispute
+# page's fact table (FactMedicaidDispute) imports from view
+# EXPORT_MEDICAID_DISPUTE_DETAIL_REPORT, filtered "client" = 'ferring' (the
+# p_customer M parameter) and "Invoice Date" within the previous 5 years.
+#
+# IMPORTANT -- the M filter is Date.IsInPreviousNYears([Invoice Date], 5),
+# which EXCLUDES the current calendar year. Current-year invoices never load
+# into the model. The SQL below mirrors that window so reconciliation matches
+# the report; if the exclusion is unintentional (likely worth confirming with
+# the report owner), fix the report first, then relax both sides together.
+#
+# The view's column names are mixed-case with spaces, so the SQL uses quoted
+# (case-sensitive) identifiers exactly as they appear in the M source.
+#
+# These measures are whole-table aggregates (the model's 5-year import window
+# is the only time filter): the report's PeriodYearQuarter slicer sits on
+# DimDates, which has NO relationship to FactMedicaidDispute, so it doesn't
+# filter the data -- see known_issues at the bottom.
+#
+# IMPORTANT -- "Invoice Date" is VARCHAR, not a real date column, and is wrapped
+# in TRY_TO_DATE() below rather than compared directly. Confirmed live (2026-08-28)
+# via GET_DDL: the view computes it from medi_invoice.util_quarter with a
+# REPLACE(lower(...), 'q1', '-03-31') chain covering only q1-q4. Any row elsewhere
+# in the underlying table with a quarter code outside q1-q4 (seen live: a 'q5' on
+# an unrelated client) leaves the text unreplaced. Comparing "Invoice Date" >=/<
+# directly against a DATE forces Snowflake to attempt casting that garbage value
+# during predicate pushdown -- before the "client" filter excludes the row -- and
+# the query hard-fails with `Date '...' is not recognized`, even though no row for
+# "client" = 'ferring' itself is malformed. TRY_TO_DATE() never hard-errors (NULL on
+# unparseable input, which the range comparison then correctly excludes), so it's
+# the fix rather than a data cleanup step here -- see known_issues at the bottom.
+
+measures:
+  total_disputed_amount:
+    description: "TotalRebateAmount / TotalRebateDollars (All Status) -- SUM of Disputed Amount across all statuses"
+    page: dispute_outcomes_summary
+    tolerance_pct: 0.5
+    snowflake:
+      sql: >
+        SELECT SUM("Disputed Amount") AS value
+        FROM platform_export_adapter.export_medicaid_dispute_detail_report
+        WHERE "client" = 'ferring'
+          AND TRY_TO_DATE("Invoice Date") >= DATEADD(YEAR, -5, DATE_TRUNC(YEAR, CURRENT_DATE))
+          AND TRY_TO_DATE("Invoice Date") <  DATE_TRUNC(YEAR, CURRENT_DATE)
+    powerbi:
+      dataset_id: "a6dcb475-1034-49b8-a535-b90ae4c63f22"  # confirmed live 2026-08-28 via /groups/{workspace}/reports
+      report_id: "c7c3166e-dd37-4404-9259-d876530a88ce"
+      dax: >
+        EVALUATE
+        ROW ( "TotalRebateAmount", SUM ( FactMedicaidDispute[Disputed Amount] ) )
+
+  win_rebate_dollars:
+    description: "WinRebateDollars -- Disputed Amount where Win Loss Status = Win"
+    page: dispute_outcomes_summary
+    tolerance_pct: 0.5
+    snowflake:
+      sql: >
+        SELECT SUM("Disputed Amount") AS value
+        FROM platform_export_adapter.export_medicaid_dispute_detail_report
+        WHERE "client" = 'ferring'
+          AND "Win Loss Status" = 'Win'
+          AND TRY_TO_DATE("Invoice Date") >= DATEADD(YEAR, -5, DATE_TRUNC(YEAR, CURRENT_DATE))
+          AND TRY_TO_DATE("Invoice Date") <  DATE_TRUNC(YEAR, CURRENT_DATE)
+    powerbi:
+      dataset_id: "a6dcb475-1034-49b8-a535-b90ae4c63f22"
+      report_id: "c7c3166e-dd37-4404-9259-d876530a88ce"
+      dax: >
+        EVALUATE
+        ROW (
+            "WinRebateDollars",
+            CALCULATE (
+                SUM ( FactMedicaidDispute[Disputed Amount] ),
+                FactMedicaidDispute[Win Loss Status] = "Win"
+            )
+        )
+
+  loss_rebate_dollars:
+    description: "LossRebateDollars -- Disputed Amount where Win Loss Status = Loss"
+    page: dispute_outcomes_summary
+    tolerance_pct: 0.5
+    snowflake:
+      sql: >
+        SELECT SUM("Disputed Amount") AS value
+        FROM platform_export_adapter.export_medicaid_dispute_detail_report
+        WHERE "client" = 'ferring'
+          AND "Win Loss Status" = 'Loss'
+          AND TRY_TO_DATE("Invoice Date") >= DATEADD(YEAR, -5, DATE_TRUNC(YEAR, CURRENT_DATE))
+          AND TRY_TO_DATE("Invoice Date") <  DATE_TRUNC(YEAR, CURRENT_DATE)
+    powerbi:
+      dataset_id: "a6dcb475-1034-49b8-a535-b90ae4c63f22"
+      report_id: "c7c3166e-dd37-4404-9259-d876530a88ce"
+      dax: >
+        EVALUATE
+        ROW (
+            "LossRebateDollars",
+            CALCULATE (
+                SUM ( FactMedicaidDispute[Disputed Amount] ),
+                FactMedicaidDispute[Win Loss Status] = "Loss"
+            )
+        )
+
+  open_rebate_dollars:
+    description: "OpenRebateDollars -- Disputed Amount where Win Loss Status = Open"
+    page: dispute_outcomes_summary
+    tolerance_pct: 0.5
+    snowflake:
+      sql: >
+        SELECT SUM("Disputed Amount") AS value
+        FROM platform_export_adapter.export_medicaid_dispute_detail_report
+        WHERE "client" = 'ferring'
+          AND "Win Loss Status" = 'Open'
+          AND TRY_TO_DATE("Invoice Date") >= DATEADD(YEAR, -5, DATE_TRUNC(YEAR, CURRENT_DATE))
+          AND TRY_TO_DATE("Invoice Date") <  DATE_TRUNC(YEAR, CURRENT_DATE)
+    powerbi:
+      dataset_id: "a6dcb475-1034-49b8-a535-b90ae4c63f22"
+      report_id: "c7c3166e-dd37-4404-9259-d876530a88ce"
+      dax: >
+        EVALUATE
+        ROW (
+            "OpenRebateDollars",
+            CALCULATE (
+                SUM ( FactMedicaidDispute[Disputed Amount] ),
+                FactMedicaidDispute[Win Loss Status] = "Open"
+            )
+        )
+
+  total_dispute_count:
+    description: "TotalDisputeCount(All Status) -- row count of FactMedicaidDispute"
+    page: dispute_outcomes_summary
+    tolerance_pct: 0.0
+    snowflake:
+      sql: >
+        SELECT COUNT(*) AS value
+        FROM platform_export_adapter.export_medicaid_dispute_detail_report
+        WHERE "client" = 'ferring'
+          AND TRY_TO_DATE("Invoice Date") >= DATEADD(YEAR, -5, DATE_TRUNC(YEAR, CURRENT_DATE))
+          AND TRY_TO_DATE("Invoice Date") <  DATE_TRUNC(YEAR, CURRENT_DATE)
+    powerbi:
+      dataset_id: "a6dcb475-1034-49b8-a535-b90ae4c63f22"
+      report_id: "c7c3166e-dd37-4404-9259-d876530a88ce"
+      dax: >
+        EVALUATE
+        ROW ( "TotalDisputeCount", COUNTROWS ( FactMedicaidDispute ) )
+
+  win_percentage:
+    description: "WinPercentage -- Win disputes / all disputes (0-1 ratio)"
+    page: dispute_outcomes_summary
+    tolerance_pct: 0.1
+    snowflake:
+      sql: >
+        SELECT
+            DIV0(
+                COUNT_IF("Win Loss Status" = 'Win'),
+                COUNT(*)
+            ) AS value
+        FROM platform_export_adapter.export_medicaid_dispute_detail_report
+        WHERE "client" = 'ferring'
+          AND TRY_TO_DATE("Invoice Date") >= DATEADD(YEAR, -5, DATE_TRUNC(YEAR, CURRENT_DATE))
+          AND TRY_TO_DATE("Invoice Date") <  DATE_TRUNC(YEAR, CURRENT_DATE)
+    powerbi:
+      dataset_id: "a6dcb475-1034-49b8-a535-b90ae4c63f22"
+      report_id: "c7c3166e-dd37-4404-9259-d876530a88ce"
+      dax: >
+        EVALUATE
+        ROW (
+            "WinPercentage",
+            DIVIDE (
+                CALCULATE (
+                    COUNTROWS ( FactMedicaidDispute ),
+                    FactMedicaidDispute[Win Loss Status] = "Win"
+                ),
+                COUNTROWS ( FactMedicaidDispute ),
+                0
+            )
+        )
+
+# --- known_issues found while analyzing the pbix (not reconcilable measures) --
+#
+# 1. Broken conditional-formatting references (found via pbixray static analysis, no longer a
+#    standing check -- the pbix-based lint was removed since this project no longer relies on
+#    the local .pbix): the detail table visual (992226e6ea40284fbc32, "Disputes Detail Analysis")
+#    carries FillRule backColor rules referencing entities 'METRIC C&P Bugs Resolved'[Bugs
+#    Resolved] and 'METRIC C&P All Tickets'[Target Tickets] -- neither table exists in this
+#    model. Leftover from whatever report the visual was copied from.
+#
+# 2. Orphaned DimDates: the PeriodYearQuarter slicer on the main page sits on
+#    DimDates, but DimDates has no relationship to FactMedicaidDispute (or any
+#    fact table). Selecting a quarter changes only the dynamic titles (via
+#    SELECTEDVALUE) -- the detail table and win/loss chart do NOT filter.
+#
+# 3. Unrelated DimState in the detail table: the "State" column shown in the
+#    detail table comes from DimState[StateCode] (a calculated DATATABLE), and
+#    DimState has no relationship to FactMedicaidDispute either.
+#    FactMedicaidDispute has its own "State" column that isn't the one used.
+#
+# 4. Current-year data excluded: Date.IsInPreviousNYears(..., 5) in the M
+#    source filters out all current-calendar-year rows. Confirm this is
+#    intentional before go-live.
+#
+# 5. "Invoice Date" / "Utilization Date" are computed VARCHAR columns (view DDL:
+#    REPLACE(lower(medi_invoice.util_quarter), 'q1', '-03-31'), ... only for
+#    q1-q4), not real dates. A quarter code outside q1-q4 anywhere in the
+#    underlying table (confirmed live, unrelated to "client" = 'ferring') survives
+#    as unreplaced text and crashes any query that compares "Invoice Date"
+#    directly against a DATE, because Snowflake evaluates that comparison during
+#    predicate pushdown before the "client" filter excludes the bad row. Fixed by
+#    wrapping in TRY_TO_DATE() (see the SQL above) rather than by cleaning the
+#    source data, which this project doesn't own.
+
+# --- grouped_measures: chart/table-level reconciliation, not just a single scalar --
+#
+# The scalar `measures` above only reconcile a page's whole-table totals; they can't
+# catch two categories being swapped or miscounted if the grand total still matches.
+# These verify the actual row-set (group key -> value) backing a chart/table, matched
+# by key between Snowflake and Power BI. Verified live 2026-08-28: both sides return
+# the identical 19 (Dispute Code, Win Loss Status) groups after excluding blank status
+# (matches the page-level filter documented in skill.md), with matching counts.
+grouped_measures:
+  dispute_status_by_dispute_code:
+    description: >
+      Backing data for the "Dispute Status by Dispute Code" 100% stacked bar chart --
+      row count per (Dispute Code, Win Loss Status) pair. Excludes blank/null Win Loss
+      Status to mirror the chart's own page-level filter (documented in skill.md).
+    page: dispute_outcomes_summary
+    tolerance_pct: 0.5
+    group_columns:
+      snowflake: [DISPUTE_CODE, WIN_LOSS_STATUS]
+      powerbi: ["FactMedicaidDispute[Dispute Codes]", "FactMedicaidDispute[Win Loss Status]"]
+    value_column:
+      snowflake: VALUE
+      powerbi: "[Count]"
+    snowflake:
+      sql: >
+        SELECT "Dispute Codes" AS dispute_code, "Win Loss Status" AS win_loss_status, COUNT(*) AS value
+        FROM platform_export_adapter.export_medicaid_dispute_detail_report
+        WHERE "client" = 'ferring'
+          AND "Win Loss Status" IS NOT NULL
+          AND TRY_TO_DATE("Invoice Date") >= DATEADD(YEAR, -5, DATE_TRUNC(YEAR, CURRENT_DATE))
+          AND TRY_TO_DATE("Invoice Date") <  DATE_TRUNC(YEAR, CURRENT_DATE)
+        GROUP BY "Dispute Codes", "Win Loss Status"
+    powerbi:
+      dataset_id: "a6dcb475-1034-49b8-a535-b90ae4c63f22"
+      report_id: "c7c3166e-dd37-4404-9259-d876530a88ce"
+      dax: >
+        EVALUATE
+        FILTER (
+            SUMMARIZECOLUMNS (
+                FactMedicaidDispute[Dispute Codes],
+                FactMedicaidDispute[Win Loss Status],
+                "Count", COUNTROWS ( FactMedicaidDispute )
+            ),
+            NOT ISBLANK ( FactMedicaidDispute[Win Loss Status] )
+        )
+
+# --- consistency_checks: pure-DAX internal invariants, no Snowflake involved --
+#
+# These verify the model's own derived-column logic is internally exhaustive/consistent
+# (e.g. every row lands in exactly one bucket), independent of whether Snowflake and
+# Power BI agree with each other. Deterministic arithmetic, not a Claude judgment call --
+# see the consistency-check step in test_powerbi_validation_steps.py.
+consistency_checks:
+  dispute_status_components_sum_to_total:
+    description: >
+      Win Loss Status is a SWITCH-derived bucket (see skill.md) with exactly four
+      possible outcomes: Win, Loss, Open, or blank/unclassified. WinDisputeCount +
+      LossDisputeCount + OpenDisputeCount + (rows with blank Win Loss Status) must
+      therefore equal TotalDisputeCount exactly -- if it doesn't, the SWITCH logic
+      is double-counting or dropping rows. Verified live 2026-08-28: 20 + 6 + 4441
+      + 168 = 4635 = TotalDisputeCount.
+    page: dispute_outcomes_summary
+    tolerance_pct: 0.01
+    component_keys: [Win, Loss, Open, Unclassified]
+    total_key: Total
+    # For terminal/Allure display only -- an existing scalar `measures` entry whose
+    # Snowflake value is printed alongside Power BI's Total for visual cross-reference.
+    # NOT part of this check's pass/fail logic, which is purely Power BI-internal
+    # (components summing to Total); total_dispute_count vs Snowflake is already its
+    # own KPI reconciliation scenario.
+    reference_snowflake_measure: total_dispute_count
+    powerbi:
+      dataset_id: "a6dcb475-1034-49b8-a535-b90ae4c63f22"
+      report_id: "c7c3166e-dd37-4404-9259-d876530a88ce"
+      dax: >
+        EVALUATE
+        ROW (
+            "Win", [WinDisputeCount],
+            "Loss", [LossDisputeCount],
+            "Open", [OpenDisputeCount],
+            "Unclassified", CALCULATE ( COUNTROWS ( FactMedicaidDispute ), ISBLANK ( FactMedicaidDispute[Win Loss Status] ) ),
+            "Total", [TotalDisputeCount]
+        )

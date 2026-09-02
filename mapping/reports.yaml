@@ -1,0 +1,18 @@
+# Report: "Dispute Outcomes Summary". Confirmed live 2026-08-28 via the Power BI
+# REST API that c5ad4ae8-eb20-4388-8cf2-923a7b82dc04 (workspace) and
+# c7c3166e-dd37-4404-9259-d876530a88ce (report, -> dataset a6dcb475-1034-49b8-
+# a535-b90ae4c63f22) are real, not placeholders -- the report is published.
+# Page keys use the internal page IDs from the pbix's Report/definition/pages/
+# pages.json; URLs use the ?pageName= deep link.
+
+reports:
+  dispute_outcomes_summary:
+    display_name: "Dispute Outcomes Summary"
+    url: "https://app.powerbi.com/groups/c5ad4ae8-eb20-4388-8cf2-923a7b82dc04/reports/c7c3166e-dd37-4404-9259-d876530a88ce?pageName=817f95ee577e6f4d4b17"
+
+  # Hidden-in-view-mode working page holding the Win/Loss/Open % cards and
+  # pivot -- still reachable via the deep link. Enable in the feature file's
+  # Examples if it becomes user-facing.
+  page_1_hidden:
+    display_name: "Page 1"
+    url: "https://app.powerbi.com/groups/c5ad4ae8-eb20-4388-8cf2-923a7b82dc04/reports/c7c3166e-dd37-4404-9259-d876530a88ce?pageName=c8d7d9d06205bd443aa0"
